@@ -699,24 +699,23 @@ def compute_single_eigenstate(cfg, entry, jpm_str, geo, discrete_q,
     }
 
     # --- RDM (if subsystems specified) ---
+    # Per-eigenstate: store raw ρ(ψ) WITHOUT spin-flip averaging.
+    # Spin-flip averaging is done only for the final GS-averaged RDM
+    # in average_per_state_results().
     if subsystems:
-        flip_mask = np.int64((1 << N) - 1)
         nz = basis                  # nonzero indices in full space
         psi_nz = psi_sector         # nonzero coefficients
-        nz_flip = nz ^ flip_mask    # spin-flipped basis
 
         rdm_per_state = {}
         for name, sub_cfg in subsystems.items():
             for oi, sites in enumerate(sub_cfg['sites_list']):
                 try:
                     rdm = compute_rdm(nz, psi_nz, sites, N)
-                    rdm_flip = compute_rdm(nz_flip, psi_nz, sites, N)
-                    rdm_i = (rdm + rdm_flip) / 2.0
-                    S_vn, S_R2, spectrum = entanglement_entropy(rdm_i)
+                    S_vn, S_R2, spectrum = entanglement_entropy(rdm)
                     rdm_per_state[(name, oi)] = {
-                        'rdm': rdm_i, 'spectrum': spectrum,
+                        'rdm': rdm, 'spectrum': spectrum,
                         'S_vn': S_vn, 'S_R2': S_R2,
-                        'trace': np.trace(rdm_i).real,
+                        'trace': np.trace(rdm).real,
                         'sites': sites,
                     }
                 except Exception as e:
@@ -781,7 +780,10 @@ def average_per_state_results(per_state_list, subsystems=None):
     result['per_state_SzSz'] = np.array(
         [s['SzSz'] for s in per_state_list])
 
-    # RDM: average per-eigenstate RDMs
+    # RDM: average per-eigenstate raw RDMs + spin-flip for final result.
+    # Per-eigenstate RDMs are raw ρ(ψ) (no spin-flip).
+    # The GS-averaged RDM is (1/n) Σ_k (ρ(ψ_k) + ρ(ψ̃_k)) / 2,
+    # where ψ̃ is the global spin-flip of ψ.
     if subsystems and all('rdm' in s for s in per_state_list):
         rdm_results = {}
         # Collect all (name, oi) keys that appear in all states
@@ -789,10 +791,35 @@ def average_per_state_results(per_state_list, subsystems=None):
         for s in per_state_list[1:]:
             all_keys &= set(s.get('rdm', {}).keys())
 
-        n_total_rdm = 2 * n  # each state contributes psi + spin-flip
+        # We need flip_mask and basis for spin-flip RDMs.
+        # Reconstruct from cfg passed through subsystems.
+        # Actually, we stored raw per-state RDMs; to get spin-flip
+        # copies we need to recompute them.  Instead, store per-state
+        # raw ρ(ψ) as-is and build the averaged+flipped RDM from
+        # the per-eigenstate wavefunctions stored earlier.
+        # However wavefunctions are not stored here — so we build
+        # the spin-flipped RDMs from the raw ones using the property
+        # that ρ_A(ψ̃) = P ρ_A(ψ) P, where P is the subsystem
+        # spin-flip operator (bit-flip in Fock basis = self-inverse
+        # permutation matrix).
+        n_total_rdm = 2 * n  # each state contributes ψ + ψ̃
         for key in all_keys:
             per_rdm = [s['rdm'][key] for s in per_state_list]
-            rdm_avg = np.mean([r['rdm'] for r in per_rdm], axis=0)
+            sites = per_rdm[0]['sites']
+            n_sub = len(sites)
+            dim_sub = 1 << n_sub
+            # P = antidiag permutation that flips all subsystem spins
+            P = np.zeros((dim_sub, dim_sub))
+            for idx in range(dim_sub):
+                flipped = ((1 << n_sub) - 1) ^ idx
+                P[flipped, idx] = 1.0
+            # GS-averaged RDM with spin-flip
+            rdm_avg = np.zeros_like(per_rdm[0]['rdm'])
+            for r_i in per_rdm:
+                rdm_raw = r_i['rdm']
+                rdm_flip = P @ rdm_raw @ P  # ρ_A(ψ̃) = P ρ_A(ψ) P
+                rdm_avg += (rdm_raw + rdm_flip) / 2.0
+            rdm_avg /= n
             S_vn, S_R2, spectrum = entanglement_entropy(rdm_avg)
             tr = np.trace(rdm_avg).real
             if abs(tr - 1.0) > 1e-4:
@@ -803,7 +830,7 @@ def average_per_state_results(per_state_list, subsystems=None):
                 'rdm': rdm_avg, 'spectrum': spectrum,
                 'S_vn': S_vn, 'S_R2': S_R2,
                 'trace': tr,
-                'sites': per_rdm[0]['sites'],
+                'sites': sites,
                 'per_state_rdm': [r['rdm'] for r in per_rdm],
                 'per_state_S_vn': np.array([r['S_vn'] for r in per_rdm]),
                 'per_state_S_R2': np.array([r['S_R2'] for r in per_rdm]),
@@ -1037,9 +1064,10 @@ def save_per_jpm_result(gs_result, ex_result, per_jpm_dir, jpm_str,
             "  nem_abs    — |Φ_nematic| (nematic order parameter magnitude)",
             "  nem_arg    — arg(Φ_nematic) in radians",
             "  B01,B02,B12 — mean bond energy by sublattice pair (0-1, 0-2, 1-2)",
-            "  *_S_vn     — von Neumann entanglement entropy for RDM subsystem",
-            "  *_S_R2     — Rényi-2 entanglement entropy for RDM subsystem",
+            "  *_S_vn     — von Neumann entanglement entropy (from GS-averaged+spin-flipped RDM)",
+            "  *_S_R2     — Rényi-2 entanglement entropy (from GS-averaged+spin-flipped RDM)",
             "  *_trace    — Tr(ρ_A) for RDM subsystem (should be 1.0)",
+            "  n_total_rdm — total density matrices that enter the average (= 2 × n_gs)",
         ]
         _save_metadata(os.path.join(gdir, 'metadata.dat'), meta,
                        header_lines=meta_header)
@@ -1220,25 +1248,28 @@ def save_per_jpm_result(gs_result, ex_result, per_jpm_dir, jpm_str,
                 }
                 rdm_meta_hdr = [
                     f"RDM metadata: {name} orientation {oi}",
-                    f"Jpm={jpm_str}, {state_label}, "
-                    f"averaged over {n_eig} eigenstates + spin-flip",
+                    f"Jpm={jpm_str}, {state_label}",
+                    f"GS-averaged over {n_eig} eigenstates, with spin-flip",
+                    f"  ρ_avg = (1/{n_eig}) Σ_k [ρ(ψ_k) + ρ(ψ̃_k)] / 2",
+                    f"  where ψ̃ = global spin-flip of ψ",
                     f"Subsystem sites: {sites} ({len(sites)} sites, "
-                    f"dim={dim_sub})",
+                    f"Hilbert dim = {dim_sub})",
                     "",
-                    "S_vn  = von Neumann entropy -Tr(ρ ln ρ)",
-                    "S_R2  = Rényi-2 entropy -ln(Tr(ρ²))",
+                    "S_vn  = von Neumann entropy  -Tr(ρ ln ρ)  of the averaged RDM",
+                    "S_R2  = Rényi-2 entropy  -ln(Tr(ρ²))  of the averaged RDM",
                     "trace = Tr(ρ_A), should be 1.0",
                 ]
                 _save_metadata(os.path.join(rdir, 'metadata.dat'),
                                rdm_meta, header_lines=rdm_meta_hdr)
 
                 rdm_hdr = (f'Reduced density matrix ({name} orient {oi}).\n'
-                           f'Jpm={jpm_str}, {state_label}, '
-                           f'averaged over {n_eig} eigenstates + spin-flip\n'
+                           f'Jpm={jpm_str}, {state_label}\n'
+                           f'GS-averaged over {n_eig} eigenstates WITH spin-flip:\n'
+                           f'  ρ_avg = (1/{n_eig}) Σ_k [ρ(ψ_k) + ρ(ψ̃_k)] / 2\n'
                            f'Subsystem sites: {sites}\n'
                            f'Matrix shape: ({dim_sub} x {dim_sub})\n'
-                           f'Rows/cols labeled by subsystem Fock states '
-                           f'0..{dim_sub-1}')
+                           f'Rows/cols = subsystem Fock states 0..{dim_sub-1} '
+                           f'(binary encoding of {len(sites)} subsystem spins)')
                 np.savetxt(os.path.join(rdir, 'sites.dat'),
                            np.array(sites, dtype=int).reshape(1, -1),
                            fmt='%d',
@@ -1254,10 +1285,11 @@ def save_per_jpm_result(gs_result, ex_result, per_jpm_dir, jpm_str,
                 np.savetxt(os.path.join(rdir, 'spectrum.dat'),
                            rdm_data['spectrum'],
                            header=(f'Entanglement spectrum (eigenvalues '
-                                   f'of ρ_A) for {name} orient {oi}.\n'
-                                   f'Jpm={jpm_str}, {state_label}\n'
-                                   f'{len(rdm_data["spectrum"])} eigenvalues '
-                                   f'sorted ascending'))
+                                   f'of ρ_avg) for {name} orient {oi}.\n'
+                                   f'Jpm={jpm_str}, {state_label}, '
+                                   f'GS-averaged + spin-flip\n'
+                                   f'{len(rdm_data["spectrum"])} eigenvalues, '
+                                   f'sorted in ascending order'))
 
                 # Per-eigenstate RDMs
                 if 'per_state_rdm' in rdm_data:
@@ -1266,9 +1298,14 @@ def save_per_jpm_result(gs_result, ex_result, per_jpm_dir, jpm_str,
                     ps_rdm_hdr = (f'{name} orient {oi}, '
                                   f'sites={sites}, dim={dim_sub}')
                     for si, rdm_i in enumerate(rdm_data['per_state_rdm']):
-                        hdr_i = (f'Per-eigenstate RDM (ψ + spin-flip)/2, '
-                                 f'eigenstate {si}/{n_eig}.\n'
-                                 f'Jpm={jpm_str}, {ps_rdm_hdr}')
+                        hdr_i = (f'Per-eigenstate RDM — raw ρ(ψ_{si}), '
+                                 f'NO spin-flip averaging.\n'
+                                 f'Eigenstate {si} of {n_eig} in the '
+                                 f'{state_label} manifold.\n'
+                                 f'Jpm={jpm_str}, {ps_rdm_hdr}\n'
+                                 f'To obtain the spin-flip copy: '
+                                 f'ρ(ψ̃) = P ρ(ψ) P with P = subsystem '
+                                 f'spin-flip permutation.')
                         np.savetxt(os.path.join(ps_rdir,
                                    f'rdm_{si}_real.dat'), rdm_i.real,
                                    header=f'Real part. {hdr_i}')
@@ -1277,20 +1314,28 @@ def save_per_jpm_result(gs_result, ex_result, per_jpm_dir, jpm_str,
                                    header=f'Imaginary part. {hdr_i}')
                     np.savetxt(os.path.join(ps_rdir, 'S_vn.dat'),
                                rdm_data['per_state_S_vn'],
-                               header=(f'Von Neumann entropy per eigenstate '
-                                       f'for {ps_rdm_hdr}.\n'
-                                       f'Jpm={jpm_str}, {n_eig} values'))
+                               header=(f'Von Neumann entropy S_vN = -Tr(ρ ln ρ) '
+                                       f'per eigenstate.\n'
+                                       f'Computed from raw ρ(ψ) — '
+                                       f'NO spin-flip averaging.\n'
+                                       f'Jpm={jpm_str}, {n_eig} values, '
+                                       f'{ps_rdm_hdr}'))
                     np.savetxt(os.path.join(ps_rdir, 'S_R2.dat'),
                                rdm_data['per_state_S_R2'],
-                               header=(f'Rényi-2 entropy per eigenstate '
-                                       f'for {ps_rdm_hdr}.\n'
-                                       f'Jpm={jpm_str}, {n_eig} values'))
+                               header=(f'Rényi-2 entropy S_R2 = -ln(Tr(ρ²)) '
+                                       f'per eigenstate.\n'
+                                       f'Computed from raw ρ(ψ) — '
+                                       f'NO spin-flip averaging.\n'
+                                       f'Jpm={jpm_str}, {n_eig} values, '
+                                       f'{ps_rdm_hdr}'))
                     for si, spec_i in enumerate(
                             rdm_data['per_state_spectra']):
                         np.savetxt(os.path.join(ps_rdir,
                                    f'spectrum_{si}.dat'), spec_i,
-                                   header=(f'Entanglement spectrum, '
-                                           f'eigenstate {si}/{n_eig}.\n'
+                                   header=(f'Entanglement spectrum '
+                                           f'(eigenvalues of ρ(ψ_{si})), '
+                                           f'NO spin-flip.\n'
+                                           f'Eigenstate {si} of {n_eig}, '
                                            f'Jpm={jpm_str}, {ps_rdm_hdr}'))
 
     print(f"  Saved per-Jpm results: {jpm_dir}")
@@ -1325,21 +1370,27 @@ def save_rdm_txt_files(gs_result, cfg, jpm_str, output_dir):
         path = os.path.join(rdm_dir, fname)
 
         with open(path, 'w') as f:
-            f.write("# GS-Averaged + Spin-Flipped Reduced Density Matrix\n")
+            f.write("# GS-Averaged Reduced Density Matrix (with spin-flip)\n")
+            f.write("#\n")
+            f.write(f"# ρ_avg = (1/{n_gs}) Σ_k [ρ(ψ_k) + ρ(ψ̃_k)] / 2\n")
+            f.write("# where ψ̃ = global spin-flip of ψ (all spins inverted).\n")
+            f.write("# This restores Sz-symmetry broken by working in a single Sz sector.\n")
+            f.write("#\n")
             f.write(f"# Jpm: {jpm_str}\n")
             f.write(f"# E0: {E0:.15e}\n")
-            f.write(f"# n_gs: {n_gs}\n")
-            f.write(f"# n_total_rdm (incl. spin-flip): {n_total_rdm}\n")
+            f.write(f"# n_gs (degenerate eigenstates): {n_gs}\n")
+            f.write(f"# n_total_rdm (states × 2 for spin-flip): {n_total_rdm}\n")
             f.write(f"# deg_tol: {deg_tol:.1e}\n")
             f.write(f"# Geometry: {name} orient {oi}\n")
-            f.write(f"# Total sites: {N}\n")
+            f.write(f"# Total sites in cluster: {N}\n")
             f.write(f"# Subsystem sites: {sites}\n")
-            f.write(f"# Subsystem dimension: {dim_sub}\n")
-            f.write(f"# Trace: {trace:.15e}\n")
-            f.write(f"# S_vN: {S_vn:.15e}\n")
-            f.write(f"# S_R2: {S_R2:.15e}\n")
+            f.write(f"# Subsystem Hilbert dimension: {dim_sub}\n")
+            f.write(f"# Trace(ρ_avg): {trace:.15e}  (should be 1.0)\n")
+            f.write(f"# S_vN: {S_vn:.15e}  (von Neumann entropy of ρ_avg)\n")
+            f.write(f"# S_R2: {S_R2:.15e}  (Rényi-2 entropy of ρ_avg)\n")
             f.write("#\n")
-            f.write("# MATRIX FORMAT: row col real imag\n")
+            f.write("# MATRIX FORMAT: row  col  Re(ρ)  Im(ρ)\n")
+            f.write("# Only nonzero entries (|ρ_ij| > 1e-15) are listed.\n")
             f.write("#\n")
             for i in range(dim_sub):
                 for j in range(dim_sub):
@@ -1361,20 +1412,26 @@ def save_rdm_txt_files(gs_result, cfg, jpm_str, output_dir):
                 path_i = os.path.join(rdm_dir, fname_i)
                 dim_sub = rdm_i.shape[0]
                 with open(path_i, 'w') as f:
-                    f.write(f"# Per-Eigenstate RDM (psi + spin-flip)/2\n")
+                    f.write(f"# Per-Eigenstate RDM — raw ρ(ψ_{si}), NO spin-flip averaging\n")
+                    f.write("#\n")
+                    f.write("# This is the raw reduced density matrix for a single eigenstate.\n")
+                    f.write("# No spin-flip copy is included. To construct the spin-flip partner:\n")
+                    f.write("#   ρ(ψ̃) = P · ρ(ψ) · P,  where P is the subsystem spin-flip\n")
+                    f.write("#   permutation matrix (self-inverse perm that flips all sub-bits).\n")
+                    f.write("#\n")
                     f.write(f"# Jpm: {jpm_str}\n")
                     f.write(f"# E0: {E0:.15e}\n")
-                    f.write(f"# Eigenstate index: {si}\n")
-                    f.write(f"# n_gs: {n_gs}\n")
+                    f.write(f"# Eigenstate index: {si} (of {n_gs} degenerate states)\n")
                     f.write(f"# Geometry: {name} orient {oi}\n")
-                    f.write(f"# Total sites: {N}\n")
+                    f.write(f"# Total sites in cluster: {N}\n")
                     f.write(f"# Subsystem sites: {sites}\n")
-                    f.write(f"# Subsystem dimension: {dim_sub}\n")
-                    f.write(f"# Trace: {tr_i:.15e}\n")
-                    f.write(f"# S_vN: {s_vn_i:.15e}\n")
-                    f.write(f"# S_R2: {s_r2_i:.15e}\n")
+                    f.write(f"# Subsystem Hilbert dimension: {dim_sub}\n")
+                    f.write(f"# Trace(ρ): {tr_i:.15e}  (should be 1.0)\n")
+                    f.write(f"# S_vN: {s_vn_i:.15e}  (von Neumann, raw ρ)\n")
+                    f.write(f"# S_R2: {s_r2_i:.15e}  (Rényi-2, raw ρ)\n")
                     f.write("#\n")
-                    f.write("# MATRIX FORMAT: row col real imag\n")
+                    f.write("# MATRIX FORMAT: row  col  Re(ρ)  Im(ρ)\n")
+                    f.write("# Only nonzero entries (|ρ_ij| > 1e-15) are listed.\n")
                     f.write("#\n")
                     for i in range(dim_sub):
                         for j in range(dim_sub):
@@ -1428,11 +1485,27 @@ def save_monolithic(all_results, nn_pairs, bond_positions, discrete_q,
     geo_dir = os.path.join(output_dir, f'{prefix}geometry')
     os.makedirs(geo_dir, exist_ok=True)
     np.savetxt(os.path.join(geo_dir, 'nn_pairs.dat'),
-               np.array(nn_pairs), fmt='%d')
-    np.savetxt(os.path.join(geo_dir, 'bond_positions.dat'), bond_positions)
-    np.savetxt(os.path.join(geo_dir, 'discrete_q.dat'), discrete_q)
-    np.savetxt(os.path.join(geo_dir, 'bz_corners.dat'), BZ_CORNERS)
+               np.array(nn_pairs), fmt='%d',
+               header=(f'Nearest-neighbor bond list for {cfg["cluster"]} '
+                       f'kagome cluster ({N} sites).\n'
+                       f'{len(nn_pairs)} bonds total.\n'
+                       f'Each row: site_i  site_j  (0-indexed)'))
+    np.savetxt(os.path.join(geo_dir, 'bond_positions.dat'), bond_positions,
+               header=(f'Bond midpoint positions in real space.\n'
+                       f'{len(bond_positions)} bonds, one row per bond.\n'
+                       f'Columns: x  y  (Cartesian coordinates)'))
+    np.savetxt(os.path.join(geo_dir, 'discrete_q.dat'), discrete_q,
+               header=(f'Discrete momenta for structure factor evaluation.\n'
+                       f'{len(discrete_q)} q-points on the {LX}x{LY} '
+                       f'reciprocal mesh.\n'
+                       f'Columns: qx  qy  (reciprocal space coordinates)'))
+    np.savetxt(os.path.join(geo_dir, 'bz_corners.dat'), BZ_CORNERS,
+               header=('Corners of the first Brillouin zone (hexagonal).\n'
+                       'Each row: qx  qy  (reciprocal space coordinates)'))
     with open(os.path.join(geo_dir, 'discrete_q_labels.dat'), 'w') as f:
+        f.write('# Labels for each discrete q-point (one per line).\n')
+        f.write(f'# {len(q_labels)} labels matching rows of '
+                f'discrete_q.dat.\n')
         for l in q_labels:
             f.write(l.replace('$', '') + '\n')
     print(f"  Saved {geo_dir}")
@@ -1483,10 +1556,22 @@ def compute_sector_fidelity(cfg, jpm_list, output_dir):
 
     fid_dir = os.path.join(output_dir, 'sector_fidelity')
     os.makedirs(fid_dir, exist_ok=True)
-    np.savetxt(os.path.join(fid_dir, 'jpm_values.dat'), jpm_vals)
+    np.savetxt(os.path.join(fid_dir, 'jpm_values.dat'), jpm_vals,
+               header=(f'Jpm values used in fidelity computation.\n'
+                       f'{len(jpm_vals)} values, sorted.'))
     np.savetxt(os.path.join(fid_dir, 'nup_sectors.dat'),
-               np.array(nup_sectors, dtype=int), fmt='%d')
-    np.savetxt(os.path.join(fid_dir, 'fidelity.dat'), fidelity)
+               np.array(nup_sectors, dtype=int), fmt='%d',
+               header=(f'(n_up, sector) pairs indexing fidelity matrix rows.\n'
+                       f'{n_sec} pairs total.\n'
+                       f'Columns: n_up  sector_index'))
+    np.savetxt(os.path.join(fid_dir, 'fidelity.dat'), fidelity,
+               header=(f'Ground-state fidelity |<ψ(Jpm_i)|ψ(Jpm_{{i+1}})>|² '
+                       f'between consecutive Jpm values.\n'
+                       f'Matrix shape: ({n_sec} sectors x {n_jpm - 1} '
+                       f'transitions).\n'
+                       f'Row k = (n_up, sector) pair from nup_sectors.dat.\n'
+                       f'Column j = transition from Jpm_j to Jpm_{{j+1}}.\n'
+                       f'NaN entries = sector not present at that Jpm.'))
     print(f"  Saved fidelity: {fid_dir}")
     return fidelity
 
