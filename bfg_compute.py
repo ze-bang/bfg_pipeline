@@ -85,6 +85,30 @@ CLUSTER_CONFIG = {
             },
         },
     },
+    '3x3_to_fsz': {
+        'LX': 3, 'LY': 3,
+        'NUM_SITES': 27, 'N_UC': 9,
+        'N_UP_LIST': [14, 15],
+        'BASE_DIR': os.path.join(SCRATCH,
+                                 'BFG_scan_symmetrized_pbc_3x3_fixed_Sz_translation_only'),
+        'OUTPUT_DIR': os.path.join(SCRATCH, 'analysis_BFG_3x3_fixed_Sz'),
+        'PRECOMPUTE_NUP': 14,
+        'DEG_TOL': 2e-5,
+        'SUBSYSTEMS': {
+            'hexagon': {
+                'sites_list': [[1, 2, 3, 4, 9, 11]],
+                'dim': 64,
+            },
+            'bowtie': {
+                'sites_list': [
+                    [9, 10, 11, 4, 12],
+                    [3, 5, 4, 11, 12],
+                    [4, 11, 12, 14, 13],
+                ],
+                'dim': 32,
+            },
+        },
+    },
     '2x3': {
         'LX': 2, 'LY': 3,
         'NUM_SITES': 18, 'N_UC': 6,
@@ -1582,7 +1606,8 @@ def compute_sector_fidelity(cfg, jpm_list, output_dir):
 def main():
     parser = argparse.ArgumentParser(
         description='Unified BFG Kagome ED computation (2×3 or 3×3)')
-    parser.add_argument('--cluster', required=True, choices=['2x3', '3x3', '3x3_to'],
+    parser.add_argument('--cluster', required=True,
+                        choices=['2x3', '3x3', '3x3_to', '3x3_to_fsz'],
                         help='Cluster size')
     parser.add_argument('--jpm', type=str, default='all',
                         help='Specific Jpm value or "all"')

@@ -16,7 +16,7 @@
 #   sbatch --export=CLUSTER=3x3    --array=0-39 --job-name=comp_3x3   submit_compute.sh
 #   sbatch --export=CLUSTER=2x3    --array=0-29 --job-name=comp_2x3   submit_compute.sh
 
-CLUSTER="${CLUSTER:?ERROR: set CLUSTER via --export=CLUSTER=<2x3|3x3|3x3_to>}"
+CLUSTER="${CLUSTER:?ERROR: set CLUSTER via --export=CLUSTER=<2x3|3x3|3x3_to|3x3_to_fsz>}"
 
 module --force purge
 module load StdEnv/2023 python scipy-stack hdf5

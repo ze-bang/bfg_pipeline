@@ -35,6 +35,10 @@ CLUSTER_CONFIG = {
         'output_dir': os.path.join(SCRATCH, 'analysis_BFG_3x3_translation_only'),
         'num_sites': 27,
     },
+    '3x3_to_fsz': {
+        'output_dir': os.path.join(SCRATCH, 'analysis_BFG_3x3_fixed_Sz'),
+        'num_sites': 27,
+    },
     '2x3': {
         'output_dir': os.path.join(SCRATCH, 'analysis_BFG_2x3'),
         'num_sites': 18,
@@ -102,6 +106,55 @@ def run_spectrum(cluster, output_dir, txt_only=False):
                 data, jpm_list, sector_meta, spec_dir,
                 momentum_map=momentum_map)
             mod.plot_tower_of_states(
+                data, jpm_list, sector_meta, spec_dir,
+                momentum_map=momentum_map)
+            mod.plot_bz_momenta(sector_meta, spec_dir)
+
+    elif cluster == '3x3_to_fsz':
+        mod = _import_module('plot_spectrum_BFG_3x3_multi_sz.py')
+        if mod is None:
+            return
+        mod.BASE_DIR = os.path.join(
+            SCRATCH, 'BFG_scan_symmetrized_pbc_3x3_fixed_Sz_translation_only')
+        mod.N_UP_LIST = [14, 15]
+        mod.NUM_SITES = 27
+        mod.TRANSLATION_ONLY = True
+        spec_dir = os.path.join(output_dir, 'spectrum')
+        os.makedirs(spec_dir, exist_ok=True)
+
+        print("  Discovering Jpm values...")
+        jpm_list = mod.discover_jpm_values()
+        if not jpm_list:
+            print("  No Jpm data found!")
+            return
+        print(f"  Found {len(jpm_list)} Jpm values")
+
+        print("  Collecting spectra...")
+        data, sector_meta = mod.collect_all_spectra(jpm_list)
+        momentum_map = mod.build_sector_momentum_map(sector_meta)
+
+        print("  Saving spectrum data...")
+        mod.save_spectrum_data(data, jpm_list, sector_meta, spec_dir)
+
+        if not txt_only:
+            print("  Plotting...")
+            mod.plot_global_spectrum(data, jpm_list, spec_dir)
+            mod.plot_sz_sector_spectrum(data, jpm_list, spec_dir)
+            mod.plot_combined_spectrum(data, jpm_list, sector_meta,
+                                       spec_dir, momentum_map=momentum_map)
+            mod.plot_symmetry_sector_spectrum(
+                data, jpm_list, sector_meta, spec_dir,
+                momentum_map=momentum_map)
+            mod.plot_sector_gs_energies(
+                data, jpm_list, sector_meta, spec_dir,
+                momentum_map=momentum_map)
+            mod.plot_individual_sector_panels(
+                data, jpm_list, sector_meta, spec_dir,
+                momentum_map=momentum_map)
+            mod.plot_tower_of_states(
+                data, jpm_list, sector_meta, spec_dir,
+                momentum_map=momentum_map)
+            mod.plot_tower_of_states_dual(
                 data, jpm_list, sector_meta, spec_dir,
                 momentum_map=momentum_map)
             mod.plot_bz_momenta(sector_meta, spec_dir)
@@ -195,7 +248,7 @@ def run_diagnostics(cluster, output_dir):
     print(f"  PER-EIGENSTATE DIAGNOSTICS — {cluster}")
     print(f"{'='*60}")
 
-    if cluster not in ('3x3', '3x3_to'):
+    if cluster not in ('3x3', '3x3_to', '3x3_to_fsz'):
         print("  Diagnostics only available for 3x3 (requires per_state data)")
         return
 
@@ -235,8 +288,9 @@ def run_diagnostics(cluster, output_dir):
 def main():
     parser = argparse.ArgumentParser(
         description='Unified BFG Kagome ED analysis runner')
-    parser.add_argument('--cluster', required=True, choices=['2x3', '3x3', '3x3_to'],
-                        help='Cluster: 2x3, 3x3, or 3x3_to (translation-only)')
+    parser.add_argument('--cluster', required=True,
+                        choices=['2x3', '3x3', '3x3_to', '3x3_to_fsz'],
+                        help='Cluster: 2x3, 3x3, 3x3_to, or 3x3_to_fsz (multi-Sz)')
     parser.add_argument('--output-dir', default=None,
                         help='Override output directory')
     parser.add_argument('--only', choices=['spectrum', 'sf', 'diagnostics'],

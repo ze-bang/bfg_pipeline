@@ -21,7 +21,7 @@
 #   # Standalone (if compute is already done):
 #   sbatch --export=CLUSTER=3x3_to --job-name=ana_3x3to submit_analyze.sh
 
-CLUSTER="${CLUSTER:?ERROR: set CLUSTER via --export=CLUSTER=<2x3|3x3|3x3_to>}"
+CLUSTER="${CLUSTER:?ERROR: set CLUSTER via --export=CLUSTER=<2x3|3x3|3x3_to|3x3_to_fsz>}"
 
 module --force purge
 module load StdEnv/2023 python scipy-stack

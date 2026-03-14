@@ -22,7 +22,7 @@ cd "$SCRIPT_DIR"
 # --- Parse arguments ---
 if [[ $# -lt 1 ]]; then
     echo "Usage: $0 <cluster> [--compute-only|--analyze-only]"
-    echo "  Clusters: 2x3, 3x3, 3x3_to"
+    echo "  Clusters: 2x3, 3x3, 3x3_to, 3x3_to_fsz"
     exit 1
 fi
 
@@ -30,9 +30,9 @@ CLUSTER="$1"
 MODE="${2:-full}"
 
 case "$CLUSTER" in
-    2x3|3x3|3x3_to) ;;
+    2x3|3x3|3x3_to|3x3_to_fsz) ;;
     *)
-        echo "ERROR: unknown cluster '$CLUSTER'. Use: 2x3, 3x3, 3x3_to"
+        echo "ERROR: unknown cluster '$CLUSTER'. Use: 2x3, 3x3, 3x3_to, 3x3_to_fsz"
         exit 1
         ;;
 esac
@@ -64,8 +64,9 @@ echo "  Found ${N_JPM} Jpm values → array=0-${ARRAY_MAX}"
 
 # --- Short name for job labels ---
 case "$CLUSTER" in
-    3x3_to) TAG="3x3to" ;;
-    *)      TAG="$CLUSTER" ;;
+    3x3_to)     TAG="3x3to" ;;
+    3x3_to_fsz) TAG="3x3fsz" ;;
+    *)          TAG="$CLUSTER" ;;
 esac
 
 # --- Submit ---

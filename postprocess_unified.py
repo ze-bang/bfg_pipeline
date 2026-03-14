@@ -107,6 +107,18 @@ def get_cluster_config(cluster):
             'NN_LIST_FILENAME': 'kagome_bfg_3x3_pbc_nn_list.dat',
             'HAS_K_POINT': True,
         }
+    elif cluster == '3x3_to_fsz':
+        return {
+            'LX': 3, 'LY': 3,
+            'NUM_SITES': 27, 'N_UC': 9,
+            'N_UP_LIST': [14, 15],
+            'BASE_DIR': '/scratch/zhouzb79/BFG_scan_symmetrized_pbc_3x3_fixed_Sz_translation_only',
+            'DEFAULT_OUTPUT': '/scratch/zhouzb79/analysis_BFG_3x3_fixed_Sz',
+            'PER_JPM_SUBDIR': 'per_jpm',
+            'PRECOMPUTE_PREFIX': 'precompute_ref_ham_n_up_14',
+            'NN_LIST_FILENAME': 'kagome_bfg_3x3_pbc_nn_list.dat',
+            'HAS_K_POINT': True,
+        }
     elif cluster == '2x3':
         return {
             'LX': 2, 'LY': 3,
@@ -120,7 +132,8 @@ def get_cluster_config(cluster):
             'HAS_K_POINT': False,
         }
     else:
-        raise ValueError(f"Unknown cluster: {cluster}. Use '2x3', '3x3', or '3x3_to'.")
+        raise ValueError(f"Unknown cluster: {cluster}. "
+                         f"Use '2x3', '3x3', '3x3_to', or '3x3_to_fsz'.")
 
 
 # ============================================================
@@ -881,8 +894,8 @@ def main():
     parser = argparse.ArgumentParser(
         description='Unified post-processing for BFG kagome ED results')
     parser.add_argument('--cluster', type=str, required=True,
-                        choices=['2x3', '3x3', '3x3_to'],
-                        help='Cluster type: 2x3, 3x3, or 3x3_to')
+                        choices=['2x3', '3x3', '3x3_to', '3x3_to_fsz'],
+                        help='Cluster type: 2x3, 3x3, 3x3_to, or 3x3_to_fsz')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory (default: analysis_BFG_{cluster})')
     parser.add_argument('--export-txt-only', action='store_true',
