@@ -276,9 +276,9 @@ def run_diagnostics(cluster, output_dir):
     mod.plot_sz_local_summary(results, diag_dir)
     mod.plot_chirality_summary(results, diag_dir)
     mod.plot_sz_lattice_patterns(results, diag_dir)
-    mod.plot_bond_energy(results, diag_dir)
+    mod.plot_realspace_bond_energy(results, diag_dir)
     mod.plot_per_eigenstate_structure_factors(results, diag_dir)
-    mod.plot_transverse_moments(results, diag_dir)
+    mod.plot_spin_structure_factor(results, diag_dir)
     mod.plot_rdm_subsystem_geometry(diag_dir)
 
     print(f"  Done: {diag_dir}")

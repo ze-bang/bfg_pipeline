@@ -420,189 +420,211 @@ def plot_sz_lattice_patterns(results, output_dir):
     print("  Saved diagnostic_sz_lattice")
 
 
-def plot_bond_energy(results, output_dir):
+def _build_kagome_nn_pairs(LX=3, LY=3):
+    """Build NN bond list for LX×LY kagome lattice with PBC."""
+    a1 = np.array([1.0, 0.0])
+    a2 = np.array([0.5, np.sqrt(3) / 2])
+    offsets = np.array([[0, 0], [0.5, 0], [0.25, np.sqrt(3) / 4]])
+    L1_vec, L2_vec = LX * a1, LY * a2
+
+    positions = []
+    for i in range(LX):
+        for j in range(LY):
+            for s in range(3):
+                positions.append(i * a1 + j * a2 + offsets[s])
+    positions = np.array(positions)
+    N = len(positions)
+
+    nn_dist = 0.5  # NN distance on kagome lattice
+    pairs = set()
+    for i in range(N):
+        for j in range(i + 1, N):
+            dr = positions[j] - positions[i]
+            best_d = np.linalg.norm(dr)
+            for n1 in [-1, 0, 1]:
+                for n2 in [-1, 0, 1]:
+                    d = np.linalg.norm(dr + n1 * L1_vec + n2 * L2_vec)
+                    if d < best_d:
+                        best_d = d
+            if abs(best_d - nn_dist) < 1e-6:
+                pairs.add((i, j))
+    return positions, sorted(pairs), L1_vec, L2_vec
+
+
+def _min_image_bond_endpoints(pi, pj, L1_vec, L2_vec):
+    """Return endpoint pj adjusted by PBC to be closest to pi."""
+    dr = pj - pi
+    best_dr, best_d = dr.copy(), np.linalg.norm(dr)
+    for n1 in [-1, 0, 1]:
+        for n2 in [-1, 0, 1]:
+            trial = dr + n1 * L1_vec + n2 * L2_vec
+            d = np.linalg.norm(trial)
+            if d < best_d:
+                best_d, best_dr = d, trial.copy()
+    return pi + best_dr
+
+
+def plot_realspace_bond_energy(results, output_dir):
     """
-    Per-GS-eigenstate bond energy decomposition:
-      (a) Avg bond energy <S·S> per GS eigenstate vs Jpm
-      (b) Ising part <SzSz> per GS eigenstate vs Jpm
-      (c) XY part (S+S- + S-S+)/2 per GS eigenstate vs Jpm
-      (d) Bond energy std (spatial variation across bonds) per eigenstate
+    Lattice plot of real-space NN bond energies ⟨S_i·S_j⟩ for each GS
+    eigenstate at selected Jpm values.  Bonds are drawn as colored line
+    segments on the kagome lattice.
     """
+    from matplotlib.collections import LineCollection
+
     results_bond = [r for r in results if r['B_mean'] is not None]
     if not results_bond:
-        print("  No B_mean data, skipping bond energy plot")
+        print("  No B_mean data, skipping realspace bond energy plot")
         return
 
-    has_decomp = any(r['SzSz_bond'] is not None for r in results_bond)
+    positions, nn_pairs, L1_vec, L2_vec = _build_kagome_nn_pairs()
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle(r'Per-GS-eigenstate NN bond energy $\langle \mathbf{S}_i \cdot \mathbf{S}_j \rangle$',
-                 fontsize=14)
+    selected = [r for r in results_bond if r['Jpm'] in
+                [-0.40, -0.30, -0.20, -0.15, -0.10, -0.05]]
+    if not selected:
+        step = max(1, len(results_bond) // 6)
+        selected = results_bond[::step][:6]
 
-    ax_a, ax_b, ax_c, ax_d = axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]
-
-    for r in results_bond:
-        bm = r['B_mean']       # (n_gs, 54)
-        szsz = r['SzSz_bond']  # (n_gs, 54) or None
-        jpm = r['Jpm']
-
+    panels = []
+    for r in selected:
         for si in range(r['n_gs']):
-            # (a) Average bond energy <S·S>
-            avg_full = bm[si].mean()
-            ax_a.scatter(jpm, avg_full, c='steelblue', s=15, alpha=0.6,
-                         edgecolors='none', zorder=3)
+            panels.append((r['Jpm'], si, r['B_mean'][si], r['n_gs']))
 
-            if szsz is not None:
-                # (b) Ising part
-                avg_zz = szsz[si].mean()
-                ax_b.scatter(jpm, avg_zz, c='tab:red', s=15, alpha=0.6,
-                             edgecolors='none', zorder=3)
+    n_panels = len(panels)
+    if n_panels == 0:
+        return
 
-                # (c) XY part = full - SzSz
-                xy = bm[si] - szsz[si]
-                avg_xy = xy.mean()
-                ax_c.scatter(jpm, avg_xy, c='tab:green', s=15, alpha=0.6,
-                             edgecolors='none', zorder=3)
+    ncols = min(4, n_panels)
+    nrows = (n_panels + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.0 * nrows))
+    if n_panels == 1:
+        axes = np.array([[axes]])
+    axes = np.atleast_2d(axes)
 
-            # (d) Spatial variation (std across bonds)
-            ax_d.scatter(jpm, np.std(bm[si]), c='steelblue', s=15, alpha=0.6,
-                         edgecolors='none', zorder=3,
-                         label=(r'$\sigma_b[\langle S\cdot S \rangle]$'
-                                if (r is results_bond[0] and si == 0) else None))
-            if szsz is not None:
-                ax_d.scatter(jpm, np.std(szsz[si]), c='tab:red', s=10, alpha=0.4,
-                             edgecolors='none', zorder=3, marker='s',
-                             label=(r'$\sigma_b[\langle S^z S^z \rangle]$'
-                                    if (r is results_bond[0] and si == 0) else None))
-                ax_d.scatter(jpm, np.std(bm[si] - szsz[si]), c='tab:green',
-                             s=10, alpha=0.4, edgecolors='none', zorder=3, marker='^',
-                             label=(r'$\sigma_b[\mathrm{XY}]$'
-                                    if (r is results_bond[0] and si == 0) else None))
+    all_bm = np.concatenate([p[2] for p in panels])
+    vabs = max(abs(all_bm.min()), abs(all_bm.max()))
+    norm = TwoSlopeNorm(vmin=-vabs, vcenter=0, vmax=vabs)
+    cmap = plt.cm.RdBu_r
 
-    ax_a.set_xlabel(r'$J_{\pm}$')
-    ax_a.set_ylabel(r'$\langle \mathbf{S}_i \cdot \mathbf{S}_j \rangle_{\rm avg}$')
-    ax_a.set_title(r'(a) Avg NN bond energy (full $\mathbf{S}\cdot\mathbf{S}$) per GS eigenstate')
-    ax_a.grid(True, alpha=0.3)
+    for idx, (jpm, si, bm, n_gs) in enumerate(panels):
+        row, col = divmod(idx, ncols)
+        ax = axes[row, col]
 
-    ax_b.set_xlabel(r'$J_{\pm}$')
-    ax_b.set_ylabel(r'$\langle S_i^z S_j^z \rangle_{\rm avg}$')
-    ax_b.set_title(r'(b) Ising part $\langle S^z S^z \rangle$ per GS eigenstate')
-    ax_b.grid(True, alpha=0.3)
-    if not has_decomp:
-        ax_b.text(0.5, 0.5, 'SzSz\_bond data\nnot yet computed',
-                  transform=ax_b.transAxes, ha='center', va='center', fontsize=12)
+        # Draw lattice sites
+        ax.scatter(positions[:, 0], positions[:, 1],
+                   c='gray', s=30, edgecolors='black', linewidths=0.3,
+                   zorder=5)
 
-    ax_c.set_xlabel(r'$J_{\pm}$')
-    ax_c.set_ylabel(r'$\langle S^+ S^- + S^- S^+ \rangle_{\rm avg} / 2$')
-    ax_c.set_title(r'(c) XY part per GS eigenstate')
-    ax_c.grid(True, alpha=0.3)
-    if not has_decomp:
-        ax_c.text(0.5, 0.5, 'SzSz\_bond data\nnot yet computed',
-                  transform=ax_c.transAxes, ha='center', va='center', fontsize=12)
+        # Build line segments colored by bond energy
+        segments = []
+        bond_vals = []
+        for b_idx, (i, j) in enumerate(nn_pairs):
+            pi = positions[i]
+            pj_adj = _min_image_bond_endpoints(pi, positions[j],
+                                               L1_vec, L2_vec)
+            segments.append([pi, pj_adj])
+            bond_vals.append(bm[b_idx])
 
-    ax_d.set_xlabel(r'$J_{\pm}$')
-    ax_d.set_ylabel(r'$\sigma_b$ (std across bonds)')
-    ax_d.set_title(r'(d) Spatial variation of bond energy per GS eigenstate')
-    ax_d.legend(fontsize=8)
-    ax_d.grid(True, alpha=0.3)
+        lc = LineCollection(segments, cmap=cmap, norm=norm,
+                            linewidths=2.5, zorder=3)
+        lc.set_array(np.array(bond_vals))
+        ax.add_collection(lc)
 
-    plt.tight_layout()
+        # Site labels
+        for site_idx in range(len(positions)):
+            ax.annotate(str(site_idx), positions[site_idx],
+                        fontsize=4, ha='center', va='center',
+                        color='white', fontweight='bold', zorder=6)
+
+        ax.set_aspect('equal')
+        ax.set_title(f'Jpm={jpm:.2f}, GS[{si}]/{n_gs}', fontsize=9)
+        ax.set_xlim(-0.5, 3.8)
+        ax.set_ylim(-0.5, 3.2)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    for idx in range(n_panels, nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row, col].set_visible(False)
+
+    fig.suptitle(
+        r'Real-space NN bond energy $\langle \mathbf{S}_i \cdot \mathbf{S}_j \rangle$'
+        ' per GS eigenstate',
+        fontsize=13)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    fig.colorbar(sm, ax=axes, shrink=0.6,
+                 label=r'$\langle \mathbf{S}_i \cdot \mathbf{S}_j \rangle$')
+    plt.tight_layout(rect=[0, 0, 0.92, 0.95])
     for ext in ['png', 'pdf']:
-        fig.savefig(os.path.join(output_dir, f'diagnostic_bond_energy.{ext}'),
+        fig.savefig(os.path.join(output_dir,
+                    f'diagnostic_realspace_bond_energy.{ext}'),
                     dpi=200, bbox_inches='tight')
     plt.close(fig)
-    print("  Saved diagnostic_bond_energy")
+    print("  Saved diagnostic_realspace_bond_energy")
 
 
-def plot_transverse_moments(results, output_dir):
+def plot_spin_structure_factor(results, output_dir):
     """
-    Per-GS-eigenstate transverse vs longitudinal structure factor decomposition:
-      (a) S^zz(q) at each q per eigenstate vs Jpm
-      (b) S^perp(q) = S(q) - S^zz(q) per eigenstate vs Jpm
-      (c) Ratio S^perp / S^total per eigenstate vs Jpm
-      (d) Anisotropy: S^perp/2 vs S^zz (isotropy check)
+    Per-GS-eigenstate S(q) at each discrete momentum vs Jpm.
+    Each unique q-point gets its own subplot panel, showing scatter of
+    individual eigenstate values.  This replaces the old transverse
+    decomposition plot and gives a cleaner per-q view.
     """
-    results_sf = [r for r in results if r['ps_Sq'] is not None
-                  and r['ps_Szz'] is not None]
+    results_sf = [r for r in results if r['ps_Sq'] is not None]
     if not results_sf:
-        print("  No per-eigenstate SF data, skipping transverse moments")
+        print("  No per-eigenstate SF data, skipping S(q) plot")
         return
 
     n_q = results_sf[0]['ps_Sq'].shape[1]
-    # Use K-point (index 4 for 3x3) or M-point (index 1)
-    # Pick the q with the largest GS-averaged S(q) as the representative
-    avg_sq = np.mean(np.vstack([r['ps_Sq'] for r in results_sf]), axis=0)
-    q_rep = int(np.argmax(avg_sq))
+    LX = LY = int(round(n_q ** 0.5))
+    q_labels, unique_idx = _build_q_info(LX, LY)
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    n_uniq = len(unique_idx)
+    ncols = min(3, n_uniq)
+    nrows = (n_uniq + ncols - 1) // ncols
+
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(5.5 * ncols, 4.0 * nrows),
+                             squeeze=False)
     fig.suptitle(
-        r'Per-GS-eigenstate transverse moments '
-        rf'($q$ index {q_rep}, largest $S(q)$)',
+        r'Per-GS-eigenstate $S(\mathbf{q})$ at each discrete momentum',
         fontsize=14)
 
-    ax_a, ax_b, ax_c, ax_d = axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]
+    markers = ['o', 's', '^', 'D', 'v', 'p', 'h', '*', 'X']
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
 
-    for r in results_sf:
-        jpm = r['Jpm']
-        sq = r['ps_Sq']     # (n_gs, n_q)
-        szz = r['ps_Szz']   # (n_gs, n_q)
+    for panel_idx, qi in enumerate(unique_idx):
+        row, col = divmod(panel_idx, ncols)
+        ax = axes[row, col]
+        c = colors[panel_idx % len(colors)]
+        m = markers[panel_idx % len(markers)]
+        lbl = q_labels[qi]
 
-        for si in range(r['n_gs']):
-            # (a) S^zz at each q
-            for qi in range(n_q):
-                ax_a.scatter(jpm, szz[si, qi], s=10, alpha=0.4,
-                             edgecolors='none', zorder=3)
+        for r in results_sf:
+            jpm = r['Jpm']
+            for si in range(r['n_gs']):
+                ax.scatter(jpm, r['ps_Sq'][si, qi],
+                           c=[c], marker=m, s=20, alpha=0.6,
+                           edgecolors='none', zorder=3)
 
-            # (b) S^perp at representative q
-            sperp = sq[si, q_rep] - szz[si, q_rep]
-            ax_b.scatter(jpm, sperp, c='tab:green', s=15, alpha=0.6,
-                         edgecolors='none', zorder=3)
+        ax.set_xlabel(r'$J_{\pm}$')
+        ax.set_ylabel(r'$S(\mathbf{q})$')
+        ax.set_title(f'{lbl}', fontsize=11)
+        ax.grid(True, alpha=0.3)
 
-            # (c) Ratio S^perp / S^total at representative q
-            s_total = sq[si, q_rep]
-            ratio = sperp / s_total if abs(s_total) > 1e-12 else 0.0
-            ax_c.scatter(jpm, ratio, c='tab:purple', s=15, alpha=0.6,
-                         edgecolors='none', zorder=3)
-
-            # (d) S^perp/2 vs S^zz (isotropy check: should be 1 if SU(2))
-            szz_val = szz[si, q_rep]
-            sperp_half = sperp / 2.0
-            ax_d.scatter(szz_val, sperp_half, c='steelblue', s=15, alpha=0.6,
-                         edgecolors='none', zorder=3)
-
-    ax_a.set_xlabel(r'$J_{\pm}$')
-    ax_a.set_ylabel(r'$S^{zz}(\mathbf{q})$')
-    ax_a.set_title(r'(a) $S^{zz}(\mathbf{q})$ at all $q$ per GS eigenstate')
-    ax_a.grid(True, alpha=0.3)
-
-    ax_b.set_xlabel(r'$J_{\pm}$')
-    ax_b.set_ylabel(r'$S^{\perp}(\mathbf{q})$')
-    ax_b.set_title(rf'(b) Transverse SF $S^{{\perp}} = S - S^{{zz}}$ (q idx {q_rep})')
-    ax_b.grid(True, alpha=0.3)
-
-    ax_c.set_xlabel(r'$J_{\pm}$')
-    ax_c.set_ylabel(r'$S^{\perp} / S^{\mathrm{total}}$')
-    ax_c.set_title(rf'(c) Transverse fraction (q idx {q_rep})')
-    ax_c.axhline(2/3, color='gray', ls='--', lw=1,
-                 label=r'$2/3$ (SU(2) isotropic)')
-    ax_c.legend(fontsize=8)
-    ax_c.grid(True, alpha=0.3)
-
-    ax_d.set_xlabel(r'$S^{zz}(\mathbf{q})$')
-    ax_d.set_ylabel(r'$S^{\perp}(\mathbf{q})/2$')
-    ax_d.set_title(rf'(d) Isotropy check: $S^{{\perp}}/2$ vs $S^{{zz}}$ (q idx {q_rep})')
-    lims = ax_d.get_xlim()
-    ax_d.plot(lims, lims, 'k--', lw=0.8, label='isotropic')
-    ax_d.legend(fontsize=8)
-    ax_d.set_aspect('equal')
-    ax_d.grid(True, alpha=0.3)
+    # Hide unused panels
+    for idx in range(n_uniq, nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row, col].set_visible(False)
 
     plt.tight_layout()
     for ext in ['png', 'pdf']:
-        fig.savefig(os.path.join(output_dir, f'diagnostic_transverse_sf.{ext}'),
+        fig.savefig(os.path.join(output_dir,
+                    f'diagnostic_spin_structure_factor.{ext}'),
                     dpi=200, bbox_inches='tight')
     plt.close(fig)
-    print("  Saved diagnostic_transverse_sf")
+    print("  Saved diagnostic_spin_structure_factor")
 
 
 # ============================================================
@@ -894,8 +916,8 @@ def main():
     plot_sz_local_summary(results, output_dir)
     plot_chirality_summary(results, output_dir)
     plot_sz_lattice_patterns(results, output_dir)
-    plot_bond_energy(results, output_dir)
-    plot_transverse_moments(results, output_dir)
+    plot_realspace_bond_energy(results, output_dir)
+    plot_spin_structure_factor(results, output_dir)
     plot_per_eigenstate_structure_factors(results, output_dir)
     plot_rdm_subsystem_geometry(output_dir)
     print("\nDone. Output in:", output_dir)
